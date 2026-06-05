@@ -11,7 +11,7 @@ NetworkManager is only a control/status frontend in this integration. NetBird re
 - NetBird daemon gRPC socket available, by default:
   - `unix:///var/run/netbird.sock`
 - NetworkManager VPN service metadata installed for VPN type `netbird` (packaging target)
-- For the desktop properties editor: libnm, GTK 3, a C compiler, and `pkg-config` build dependencies
+- For the desktop properties editor: libnm, GTK 3, libnma, a C compiler, and `pkg-config` build dependencies; GTK 4 support additionally needs GTK 4 and libnma-gtk4
 
 For development you can run the service directly on the session bus and use the `Taskfile.yml` D-Bus smoke tasks.
 
@@ -42,16 +42,40 @@ cd nm-netbird-service_linux_amd64
 sudo ./install.sh
 ```
 
-The tarball also includes `uninstall.sh`. Both scripts accept `DESTDIR` plus path overrides such as `LIBEXEC_DIR`, `NM_PLUGIN_DIR`, `NM_VPN_DIR`, `DBUS_POLICY_DIR`, and `NM_CONF_DIR` for staging or distro-specific layouts. By default, `NM_VPN_DIR` is `/etc/NetworkManager/VPN`, where NetworkManager discovers local VPN service metadata. If the tarball does not include a prebuilt properties editor plugin, `install.sh` builds it from bundled C sources and requires `cc`, `pkg-config`, libnm development headers, and GTK 3 development headers.
+The tarball also includes `uninstall.sh`. Both scripts accept `DESTDIR` plus path overrides such as `LIBEXEC_DIR`, `NM_PLUGIN_DIR`, `NM_VPN_DIR`, `DBUS_POLICY_DIR`, and `NM_CONF_DIR` for staging or distro-specific layouts. By default, `NM_VPN_DIR` is `/etc/NetworkManager/VPN`, where NetworkManager discovers local VPN service metadata. If the tarball does not include prebuilt properties editor modules, `install.sh` builds the libnm loader and GTK 3 editor from bundled C sources and requires `cc`, `pkg-config`, libnm, GTK 3, and libnma development headers.
+
+When GTK 4 and libnma-gtk4 development packages are available, the installer also builds and installs the GTK 4 editor unless `WITH_GTK4=no` is set. To force GTK 4 editor installation explicitly, run:
+
+```bash
+sudo WITH_GTK4=yes ./install.sh
+```
 
 Package/manual installs provide:
 
 - the `nm-netbird-service` binary in the runtime libexec directory
 - the `nm-netbird-auth-dialog` helper in the runtime libexec directory
-- the `libnm-vpn-plugin-netbird.so` desktop properties editor plugin in the NetworkManager plugin directory
+- the `libnm-vpn-plugin-netbird.so` desktop properties loader in the NetworkManager plugin directory
+- the `libnm-vpn-plugin-netbird-editor.so` GTK 3 editor module in the same directory
+- optionally, the `libnm-gtk4-vpn-plugin-netbird-editor.so` GTK 4 editor module in the same directory
 - NetworkManager VPN metadata for VPN type `netbird` in NetworkManager's VPN service directory
 - D-Bus system policy for `org.freedesktop.NetworkManager.netbird`
 - NetworkManager unmanaged-interface config for NetBird-owned interfaces
+
+To install only the properties editor modules from a source checkout:
+
+```bash
+task build:properties
+task build:properties:gtk4 # optional
+
+sudo install -Dm0755 bin/libnm-vpn-plugin-netbird.so \
+  /usr/lib/NetworkManager/libnm-vpn-plugin-netbird.so
+sudo install -Dm0755 bin/libnm-vpn-plugin-netbird-editor.so \
+  /usr/lib/NetworkManager/libnm-vpn-plugin-netbird-editor.so
+sudo install -Dm0755 bin/libnm-gtk4-vpn-plugin-netbird-editor.so \
+  /usr/lib/NetworkManager/libnm-gtk4-vpn-plugin-netbird-editor.so
+```
+
+The `[libnm]` section in `/etc/NetworkManager/VPN/nm-netbird-service.name` should keep pointing at `/usr/lib/NetworkManager/libnm-vpn-plugin-netbird.so`; that loader selects the GTK 3 or GTK 4 editor module at runtime.
 
 ### System D-Bus security model
 
@@ -78,7 +102,7 @@ go build -o bin/nm-netbird-service ./cmd/nm-netbird-service
 go build -o bin/nm-netbird-auth-dialog ./cmd/nm-netbird-auth-dialog
 ```
 
-The desktop properties editor is a small libnm/GTK shared library. For local development `task build:properties` builds `bin/libnm-vpn-plugin-netbird.so` and `task test:properties` runs the settings mapping tests; distro builds may also use the Meson files under `properties/`.
+The desktop properties editor uses the common NetworkManager split-loader layout. For local development `task build:properties` builds the libnm loader and GTK 3 editor; `task build:properties:gtk4` builds the GTK 4 editor. `task test:properties` runs the settings mapping tests; distro builds may also use the Meson files under `properties/`.
 
 ## Running the service
 
