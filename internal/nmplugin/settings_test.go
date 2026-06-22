@@ -130,7 +130,6 @@ func TestParseActivationSettingsNetBirdPromptKeys(t *testing.T) {
 				netbirdSSOVerificationURIHint:     "https://login.netbird.io/device",
 				netbirdSSOVerificationURIComplete: "https://login.netbird.io/device?user_code=ABCD-EFGH",
 				netbirdSSOUserCodeHint:            "ABCD-EFGH",
-				netbirdSSOLoginHint:               "alice@example.com",
 				netbirdSSOContinue:                "yes",
 				netbirdSSOCancel:                  "no",
 			}),
@@ -156,13 +155,44 @@ func TestParseActivationSettingsNetBirdPromptKeys(t *testing.T) {
 	if parsed.SSOUserCode != "ABCD-EFGH" {
 		t.Fatalf("SSOUserCode = %q", parsed.SSOUserCode)
 	}
-	if parsed.SSOHint != "alice@example.com" {
-		t.Fatalf("SSOHint = %q", parsed.SSOHint)
-	}
 	if !parsed.SSOContinue {
 		t.Fatal("SSOContinue = false")
 	}
 	if parsed.SSOCancel {
 		t.Fatal("SSOCancel = true")
+	}
+}
+
+func TestMergeDetailsNormalizesPromptKeys(t *testing.T) {
+	settings := activationSettings{AuthMode: "sso"}.mergeDetails(VariantMap{
+		"auth-mode":                       dbus.MakeVariant("setup-key"),
+		"netbird-setup-key":               dbus.MakeVariant("secret"),
+		netbirdPromptActivationID:         dbus.MakeVariant("42"),
+		netbirdSSOVerificationURIHint:     dbus.MakeVariant("https://login.netbird.io/device"),
+		netbirdSSOVerificationURIComplete: dbus.MakeVariant("https://login.netbird.io/device?user_code=ABCD-EFGH"),
+		netbirdSSOUserCodeHint:            dbus.MakeVariant("ABCD-EFGH"),
+		netbirdSSOContinue:                dbus.MakeVariant("true"),
+	})
+
+	if settings.AuthMode != "setup-key" {
+		t.Fatalf("AuthMode = %q", settings.AuthMode)
+	}
+	if settings.SetupKey != "secret" {
+		t.Fatalf("SetupKey = %q", settings.SetupKey)
+	}
+	if settings.PromptActivationID != "42" {
+		t.Fatalf("PromptActivationID = %q", settings.PromptActivationID)
+	}
+	if settings.SSOVerificationURI != "https://login.netbird.io/device" {
+		t.Fatalf("SSOVerificationURI = %q", settings.SSOVerificationURI)
+	}
+	if settings.SSOVerificationURIComplete != "https://login.netbird.io/device?user_code=ABCD-EFGH" {
+		t.Fatalf("SSOVerificationURIComplete = %q", settings.SSOVerificationURIComplete)
+	}
+	if settings.SSOUserCode != "ABCD-EFGH" {
+		t.Fatalf("SSOUserCode = %q", settings.SSOUserCode)
+	}
+	if !settings.SSOContinue {
+		t.Fatal("SSOContinue = false")
 	}
 }
