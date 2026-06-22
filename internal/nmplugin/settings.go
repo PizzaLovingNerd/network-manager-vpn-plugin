@@ -156,8 +156,8 @@ func (s activationSettings) daemonLoginRequest() daemonclient.LoginRequest {
 	}
 	return daemonclient.LoginRequest{
 		SetupKey:      setupKey,
-		ManagementURL: s.ManagementURL,
-		AdminURL:      s.AdminURL,
+		ManagementURL: s.resolvedManagementURL(),
+		AdminURL:      s.resolvedAdminURL(),
 		Hostname:      hostname,
 		InterfaceName: s.InterfaceName,
 		PreSharedKey:  s.PreSharedKey,
@@ -167,21 +167,27 @@ func (s activationSettings) daemonLoginRequest() daemonclient.LoginRequest {
 }
 
 func (s activationSettings) daemonUpdateProfileRequest() daemonclient.UpdateProfileRequest {
-	managementURL := strings.TrimSpace(s.ManagementURL)
-	if managementURL == "" {
-		managementURL = defaultManagementURL
-	}
-	adminURL := strings.TrimSpace(s.AdminURL)
-	if adminURL == "" {
-		adminURL = defaultAdminURL
-	}
 	return daemonclient.UpdateProfileRequest{
 		Profile:       s.Profile,
-		ManagementURL: managementURL,
-		AdminURL:      adminURL,
+		ManagementURL: s.resolvedManagementURL(),
+		AdminURL:      s.resolvedAdminURL(),
 		InterfaceName: s.InterfaceName,
 		PreSharedKey:  s.PreSharedKey,
 	}
+}
+
+func (s activationSettings) resolvedManagementURL() string {
+	if value := strings.TrimSpace(s.ManagementURL); value != "" {
+		return value
+	}
+	return defaultManagementURL
+}
+
+func (s activationSettings) resolvedAdminURL() string {
+	if value := strings.TrimSpace(s.AdminURL); value != "" {
+		return value
+	}
+	return defaultAdminURL
 }
 
 func mergeActivationDetails(settings activationSettings, details VariantMap) activationSettings {

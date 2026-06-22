@@ -754,6 +754,9 @@ func TestConnectInteractiveWithSSOAuthEmitsPromptHints(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("SSO wait did not start")
 	}
+	require.Len(t, fake.loginRequests, 1)
+	require.Equal(t, "https://api.netbird.io:443", fake.loginRequests[0].ManagementURL)
+	require.Equal(t, "https://app.netbird.io:443", fake.loginRequests[0].AdminURL)
 	releaseWait()
 	waitForState(t, obj, nmplugin.ServiceStateStarted)
 }

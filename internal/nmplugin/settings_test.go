@@ -85,6 +85,41 @@ func TestParseActivationSettingsNormalizesLegacyAuthToSSO(t *testing.T) {
 	}
 }
 
+func TestDaemonLoginRequestDefaultsURLs(t *testing.T) {
+	settings := activationSettings{AuthMode: "sso"}
+
+	request := settings.daemonLoginRequest()
+	if request.ManagementURL != defaultManagementURL {
+		t.Fatalf("ManagementURL = %q, want %q", request.ManagementURL, defaultManagementURL)
+	}
+	if request.AdminURL != defaultAdminURL {
+		t.Fatalf("AdminURL = %q, want %q", request.AdminURL, defaultAdminURL)
+	}
+	if request.SetupKey != "" {
+		t.Fatalf("SetupKey = %q, want empty", request.SetupKey)
+	}
+}
+
+func TestDaemonLoginRequestPreservesConfiguredURLs(t *testing.T) {
+	settings := activationSettings{
+		AuthMode:      "setup-key",
+		SetupKey:      "secret",
+		ManagementURL: " https://api.example.com ",
+		AdminURL:      " https://app.example.com ",
+	}
+
+	request := settings.daemonLoginRequest()
+	if request.ManagementURL != "https://api.example.com" {
+		t.Fatalf("ManagementURL = %q", request.ManagementURL)
+	}
+	if request.AdminURL != "https://app.example.com" {
+		t.Fatalf("AdminURL = %q", request.AdminURL)
+	}
+	if request.SetupKey != "secret" {
+		t.Fatalf("SetupKey = %q", request.SetupKey)
+	}
+}
+
 func TestParseActivationSettingsNetBirdPromptKeys(t *testing.T) {
 	settings := ConnectionSettings{
 		"vpn": {
