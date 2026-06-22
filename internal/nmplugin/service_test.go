@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"maps"
 	"net/netip"
 	"os/exec"
 	osuser "os/user"
@@ -29,16 +30,29 @@ func TestMain(m *testing.M) {
 	goleak.VerifyTestMain(m)
 }
 
+func setupKeyConnectionSettings(extraData ...map[string]string) nmplugin.ConnectionSettings {
+	data := map[string]string{"auth": "setup-key"}
+	for _, values := range extraData {
+		maps.Copy(data, values)
+	}
+	return nmplugin.ConnectionSettings{
+		"vpn": {
+			"data":    dbus.MakeVariant(data),
+			"secrets": dbus.MakeVariant(map[string]string{"setup-key": "secret"}),
+		},
+	}
+}
+
 func TestService(t *testing.T) {
 	obj, _ := newTestingBusObject(t)
 
 	assertState(t, obj, nmplugin.ServiceStateInit)
 
 	var settingName string
-	require.NoError(t, obj.Call(nmplugin.Interface+".NeedSecrets", 0, nmplugin.ConnectionSettings{}).Store(&settingName))
+	require.NoError(t, obj.Call(nmplugin.Interface+".NeedSecrets", 0, setupKeyConnectionSettings()).Store(&settingName))
 	require.Empty(t, settingName)
 
-	require.NoError(t, obj.Call(nmplugin.Interface+".Connect", 0, nmplugin.ConnectionSettings{}).Store())
+	require.NoError(t, obj.Call(nmplugin.Interface+".Connect", 0, setupKeyConnectionSettings()).Store())
 	waitForState(t, obj, nmplugin.ServiceStateStarted)
 
 	require.NoError(t, obj.Call(nmplugin.Interface+".Disconnect", 0).Store())
@@ -55,11 +69,11 @@ func TestStatusPollFailuresFailActiveSessionAfterThreshold(t *testing.T) {
 	fake.statusErr = errors.New("daemon unavailable")
 	fake.mu.Unlock()
 
-	require.NoError(t, obj.Call(nmplugin.Interface+".Connect", 0, nmplugin.ConnectionSettings{}).Store())
+	require.NoError(t, obj.Call(nmplugin.Interface+".Connect", 0, setupKeyConnectionSettings()).Store())
 	waitForState(t, obj, nmplugin.ServiceStateStopped)
 
 	failure := waitForSignal(t, signals, "Failure")
-	require.Equal(t, []interface{}{uint32(nmplugin.PluginFailureConnectFailed)}, failure.Body)
+	require.Equal(t, []any{uint32(nmplugin.PluginFailureConnectFailed)}, failure.Body)
 	requireSignalState(t, signals, nmplugin.ServiceStateStopped)
 
 	fake.mu.Lock()
@@ -83,7 +97,7 @@ func TestStatusPollFailureCountResetsAfterSuccessfulPoll(t *testing.T) {
 	}
 	fake.mu.Unlock()
 
-	require.NoError(t, obj.Call(nmplugin.Interface+".Connect", 0, nmplugin.ConnectionSettings{}).Store())
+	require.NoError(t, obj.Call(nmplugin.Interface+".Connect", 0, setupKeyConnectionSettings()).Store())
 	assertNoSignalUntil(t, signals, 100*time.Millisecond, "Failure")
 	assertState(t, obj, nmplugin.ServiceStateStarted)
 
@@ -105,7 +119,7 @@ func TestStatusPollThresholdRaceWithDisconnectDoesNotEmitStaleFailure(t *testing
 	})
 	signals := watchSignals(t, clientConn, "Failure")
 
-	require.NoError(t, obj.Call(nmplugin.Interface+".Connect", 0, nmplugin.ConnectionSettings{}).Store())
+	require.NoError(t, obj.Call(nmplugin.Interface+".Connect", 0, setupKeyConnectionSettings()).Store())
 	waitForState(t, obj, nmplugin.ServiceStateStarted)
 
 	fake.mu.Lock()
@@ -133,7 +147,7 @@ func TestStatusPollContextCancellationDoesNotEmitFailure(t *testing.T) {
 	signals := watchSignals(t, clientConn, "Failure")
 	statusStarted := make(chan struct{})
 
-	require.NoError(t, obj.Call(nmplugin.Interface+".Connect", 0, nmplugin.ConnectionSettings{}).Store())
+	require.NoError(t, obj.Call(nmplugin.Interface+".Connect", 0, setupKeyConnectionSettings()).Store())
 	waitForState(t, obj, nmplugin.ServiceStateStarted)
 
 	fake.mu.Lock()
@@ -573,10 +587,9 @@ func TestConnectUsesNetworkManagerConnectionUUIDAsProfile(t *testing.T) {
 func TestConnectUsesNetworkManagerConnectionIDAsProfileWhenUUIDIsMissing(t *testing.T) {
 	obj, fake := newTestingBusObject(t)
 
-	settings := nmplugin.ConnectionSettings{
-		"connection": {
-			"id": dbus.MakeVariant("Work VPN"),
-		},
+	settings := setupKeyConnectionSettings()
+	settings["connection"] = nmplugin.VariantMap{
+		"id": dbus.MakeVariant("Work VPN"),
 	}
 
 	require.NoError(t, obj.Call(nmplugin.Interface+".Connect", 0, settings).Store())
@@ -668,7 +681,7 @@ func TestConnectWithSSOAuthEmitsActionableMessage(t *testing.T) {
 				continue
 			}
 			require.Len(t, signal.Body, 1)
-			require.Equal(t, "This profile needs interactive SSO; rerun with nmcli connection up <name> --ask, or run netbird login first.", signal.Body[0])
+			require.Equal(t, "This profile needs interactive SSO; rerun with nmcli connection up <name> --ask.", signal.Body[0])
 
 			fake.mu.Lock()
 			require.Empty(t, fake.loginRequests)
@@ -794,12 +807,8 @@ func TestConnectInteractiveSSOCancelStopsActivation(t *testing.T) {
 	require.Empty(t, fake.upRequests)
 }
 
-func TestConnectInteractiveRetriesWithSSOWhenDaemonRequiresAuthentication(t *testing.T) {
+func TestConnectInteractiveWithoutAuthDefaultsToSSO(t *testing.T) {
 	obj, fake := newTestingBusObject(t)
-
-	fake.mu.Lock()
-	fake.upErrs = []error{daemonclient.ErrAuthenticationRequired, nil}
-	fake.mu.Unlock()
 
 	require.NoError(t, obj.Call(nmplugin.Interface+".ConnectInteractive", 0, nmplugin.ConnectionSettings{}, nmplugin.VariantMap{}).Store())
 	waitForState(t, obj, nmplugin.ServiceStateStarted)
@@ -807,7 +816,8 @@ func TestConnectInteractiveRetriesWithSSOWhenDaemonRequiresAuthentication(t *tes
 	fake.mu.Lock()
 	defer fake.mu.Unlock()
 	require.Len(t, fake.loginRequests, 1)
-	require.Len(t, fake.upRequests, 2)
+	require.Empty(t, fake.loginRequests[0].SetupKey)
+	require.Len(t, fake.upRequests, 1)
 }
 
 func TestConnectInteractiveWaitsPastActivationTimeoutForSSO(t *testing.T) {
@@ -908,7 +918,7 @@ func TestDisconnectDuringActivationAfterDaemonUpCallsDown(t *testing.T) {
 	fake.getConfigStarted = getConfigStarted
 	fake.mu.Unlock()
 
-	require.NoError(t, obj.Call(nmplugin.Interface+".Connect", 0, nmplugin.ConnectionSettings{}).Store())
+	require.NoError(t, obj.Call(nmplugin.Interface+".Connect", 0, setupKeyConnectionSettings()).Store())
 
 	select {
 	case <-getConfigStarted:
@@ -947,14 +957,10 @@ func TestConnectEmitsMinimalNetworkManagerConfig(t *testing.T) {
 	match := fmt.Sprintf("type='signal',interface='%s',member='Config',path='%s'", nmplugin.Interface, nmplugin.ObjectPath)
 	require.NoError(t, clientConn.BusObject().Call("org.freedesktop.DBus.AddMatch", 0, match).Err)
 
-	settings := nmplugin.ConnectionSettings{
-		"vpn": {
-			"data": dbus.MakeVariant(map[string]string{
-				"interface-name": "wt-test",
-				"management-url": "https://192.0.2.10",
-			}),
-		},
-	}
+	settings := setupKeyConnectionSettings(map[string]string{
+		"interface-name": "wt-test",
+		"management-url": "https://192.0.2.10",
+	})
 
 	require.NoError(t, obj.Call(nmplugin.Interface+".Connect", 0, settings).Store())
 
@@ -997,10 +1003,9 @@ func TestConnectIgnoresNmcliUnspecifiedIfnamePlaceholder(t *testing.T) {
 	match := fmt.Sprintf("type='signal',interface='%s',member='Config',path='%s'", nmplugin.Interface, nmplugin.ObjectPath)
 	require.NoError(t, clientConn.BusObject().Call("org.freedesktop.DBus.AddMatch", 0, match).Err)
 
-	settings := nmplugin.ConnectionSettings{
-		"connection": {
-			"interface-name": dbus.MakeVariant("--"),
-		},
+	settings := setupKeyConnectionSettings()
+	settings["connection"] = nmplugin.VariantMap{
+		"interface-name": dbus.MakeVariant("--"),
 	}
 	require.NoError(t, obj.Call(nmplugin.Interface+".Connect", 0, settings).Store())
 
@@ -1037,7 +1042,7 @@ func TestConnectUsesDaemonConfigForNetworkManagerMetadata(t *testing.T) {
 	match := fmt.Sprintf("type='signal',interface='%s',member='Config',path='%s'", nmplugin.Interface, nmplugin.ObjectPath)
 	require.NoError(t, clientConn.BusObject().Call("org.freedesktop.DBus.AddMatch", 0, match).Err)
 
-	require.NoError(t, obj.Call(nmplugin.Interface+".Connect", 0, nmplugin.ConnectionSettings{}).Store())
+	require.NoError(t, obj.Call(nmplugin.Interface+".Connect", 0, setupKeyConnectionSettings()).Store())
 
 	for {
 		select {

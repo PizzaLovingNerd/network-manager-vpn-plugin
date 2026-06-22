@@ -23,11 +23,12 @@ Optional but useful:
 
 ## Initial setup
 
-Clone the repository and download Go modules:
+Clone the repository, install system dependencies, and download Go modules:
 
 ```bash
 git clone <repo-url>
 cd network-manager-vpn-plugin
+task deps:install
 go mod download
 ```
 
@@ -164,7 +165,7 @@ nmcli connection up netbird-setup
 
 Profile mapping is automatic: each NetworkManager connection uses a NetBird daemon profile named `nm-<connection UUID>`.
 
-See `README.md` for the complete list of supported `vpn.data` and `vpn.secrets` keys.
+See `docs/reference.md` for the complete list of supported `vpn.data` and `vpn.secrets` keys.
 
 ## NetBird interface ownership
 

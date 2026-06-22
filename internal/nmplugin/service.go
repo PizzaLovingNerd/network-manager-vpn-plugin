@@ -47,7 +47,7 @@ const (
 )
 
 const (
-	interactiveSSORequiredMessage = "This profile needs interactive SSO; rerun with nmcli connection up <name> --ask, or run netbird login first."
+	interactiveSSORequiredMessage = "This profile needs interactive SSO; rerun with nmcli connection up <name> --ask."
 	setupKeyRequiredMessage       = "NetBird setup key required."
 	ssoRequiredMessage            = "NetBird SSO login required."
 )
@@ -385,6 +385,10 @@ func (s *Service) runActivation(
 	}()
 
 	settings := mergeActivationDetails(parseActivationSettings(connection), details)
+	if err := settings.validateAuthMode(); err != nil {
+		s.failActivation(PluginFailureLoginFailed, err)
+		return
+	}
 	if settings.AuthMode == "sso" && !interactive {
 		s.failActivation(PluginFailureLoginFailed, errInteractiveSSONeeded)
 		return
@@ -425,10 +429,8 @@ func (s *Service) runActivation(
 		return
 	}
 
-	var failure PluginFailure
-	ctx, timeoutCancel, failure, err = s.upWithAuthenticationRetry(ctx, activationCtx, activationID, timeoutCancel, client, resolvedProfile, settings, interactive)
-	if err != nil {
-		s.failActivation(failure, err)
+	if err := client.Up(ctx, resolvedProfile); err != nil {
+		s.failActivation(classifyUpFailure(err), err)
 		return
 	}
 	daemonUp = true
@@ -449,6 +451,13 @@ func (s *Service) runActivation(
 	}
 	success = true
 	s.setStateForActiveSession(sessionID, ServiceStateStarted)
+}
+
+func classifyUpFailure(err error) PluginFailure {
+	if errors.Is(err, daemonclient.ErrAuthenticationRequired) {
+		return PluginFailureLoginFailed
+	}
+	return PluginFailureConnectFailed
 }
 
 func (s *Service) finishActivationAttempt(
@@ -477,41 +486,6 @@ func (s *Service) finishActivationAttempt(
 	if client != nil {
 		_ = client.Close()
 	}
-}
-
-func (s *Service) upWithAuthenticationRetry(
-	ctx context.Context,
-	activationCtx context.Context,
-	activationID uint64,
-	timeoutCancel context.CancelFunc,
-	client daemonclient.Client,
-	resolvedProfile daemonclient.ProfileRef,
-	settings activationSettings,
-	interactive bool,
-) (context.Context, context.CancelFunc, PluginFailure, error) {
-	err := client.Up(ctx, resolvedProfile)
-	if err == nil {
-		return ctx, timeoutCancel, 0, nil
-	}
-	if !shouldRetryUpWithSSO(err, settings, interactive) {
-		return ctx, timeoutCancel, PluginFailureConnectFailed, err
-	}
-
-	settings.AuthMode = "sso"
-	waitedForSSO, loginErr := s.authenticate(ctx, activationCtx, activationID, client, settings, interactive)
-	if loginErr != nil {
-		return ctx, timeoutCancel, PluginFailureLoginFailed, loginErr
-	}
-	ctx, timeoutCancel = s.resetActivationPhaseAfterSSO(activationCtx, ctx, timeoutCancel, waitedForSSO)
-
-	if err := client.Up(ctx, resolvedProfile); err != nil {
-		return ctx, timeoutCancel, PluginFailureConnectFailed, err
-	}
-	return ctx, timeoutCancel, 0, nil
-}
-
-func shouldRetryUpWithSSO(err error, settings activationSettings, interactive bool) bool {
-	return interactive && !settings.shouldLogin(interactive) && errors.Is(err, daemonclient.ErrAuthenticationRequired)
 }
 
 func (s *Service) resetActivationPhaseAfterSSO(
@@ -964,39 +938,61 @@ func (s *Service) monitorStatus(ctx context.Context, client daemonclient.Client,
 
 	consecutiveFailures := 0
 	for {
-		select {
-		case <-ctx.Done():
+		if contextCancelled(ctx) {
 			return
-		default:
 		}
 
 		keepGoing, failed := s.pollDaemonStatus(ctx, client, sessionID)
 		if !keepGoing {
 			return
 		}
-		if failed {
-			consecutiveFailures++
-			if consecutiveFailures >= statusPollFailureThreshold {
-				if ctx.Err() != nil {
-					return
-				}
-				if s.beforeThresholdFailure != nil {
-					s.beforeThresholdFailure()
-				}
-				if !s.failActiveSessionAfterStatusThreshold(sessionID, consecutiveFailures) {
-					return
-				}
-				return
-			}
-		} else {
-			consecutiveFailures = 0
+		consecutiveFailures = nextConsecutiveStatusFailures(consecutiveFailures, failed)
+		if failed && s.stopAfterStatusPollFailureThreshold(ctx, sessionID, consecutiveFailures) {
+			return
 		}
 
-		select {
-		case <-ctx.Done():
+		if !waitForStatusPollInterval(ctx, ticker.C) {
 			return
-		case <-ticker.C:
 		}
+	}
+}
+
+func contextCancelled(ctx context.Context) bool {
+	select {
+	case <-ctx.Done():
+		return true
+	default:
+		return false
+	}
+}
+
+func nextConsecutiveStatusFailures(current int, failed bool) int {
+	if failed {
+		return current + 1
+	}
+	return 0
+}
+
+func (s *Service) stopAfterStatusPollFailureThreshold(ctx context.Context, sessionID uint64, consecutiveFailures int) bool {
+	if consecutiveFailures < statusPollFailureThreshold {
+		return false
+	}
+	if ctx.Err() != nil {
+		return true
+	}
+	if s.beforeThresholdFailure != nil {
+		s.beforeThresholdFailure()
+	}
+	_ = s.failActiveSessionAfterStatusThreshold(sessionID, consecutiveFailures)
+	return true
+}
+
+func waitForStatusPollInterval(ctx context.Context, interval <-chan time.Time) bool {
+	select {
+	case <-ctx.Done():
+		return false
+	case <-interval:
+		return true
 	}
 }
 
@@ -1132,7 +1128,7 @@ func (s *Service) emitStateChanged(state ServiceState) {
 	}
 }
 
-func (s *Service) emit(signal string, args ...interface{}) error {
+func (s *Service) emit(signal string, args ...any) error {
 	name := Interface + "." + signal
 	if s.debug {
 		s.logger.Printf("emit %s", name)
@@ -1140,7 +1136,7 @@ func (s *Service) emit(signal string, args ...interface{}) error {
 	return s.conn.Emit(s.path, name, args...)
 }
 
-func (s *Service) logf(format string, args ...interface{}) {
+func (s *Service) logf(format string, args ...any) {
 	if s.debug {
 		s.logger.Printf(format, args...)
 		return
@@ -1260,6 +1256,6 @@ func summarizeVariantMap(values VariantMap) string {
 	return "{" + strings.Join(keys, ",") + "}"
 }
 
-func newDBusError(name string, format string, args ...interface{}) *dbus.Error {
-	return dbus.NewError(name, []interface{}{fmt.Sprintf(format, args...)})
+func newDBusError(name string, format string, args ...any) *dbus.Error {
+	return dbus.NewError(name, []any{fmt.Sprintf(format, args...)})
 }

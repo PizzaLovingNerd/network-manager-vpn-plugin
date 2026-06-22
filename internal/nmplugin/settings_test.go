@@ -18,7 +18,7 @@ func TestParseActivationSettingsVPNDataPrecedesDuplicateNonVPNKeys(t *testing.T)
 		},
 	}
 
-	for i := 0; i < 500; i++ {
+	for i := range 500 {
 		parsed := parseActivationSettings(settings)
 		if parsed.InterfaceName != "wt-netbird" {
 			t.Fatalf("iteration %d: InterfaceName = %q, want vpn.data value", i, parsed.InterfaceName)
@@ -38,11 +38,50 @@ func TestParseActivationSettingsVPNSecretsPrecedeDuplicateVPNDataKeys(t *testing
 		},
 	}
 
-	for i := 0; i < 500; i++ {
+	for i := range 500 {
 		parsed := parseActivationSettings(settings)
 		if parsed.SetupKey != "secret-secret" {
 			t.Fatalf("iteration %d: SetupKey = %q, want vpn.secrets value", i, parsed.SetupKey)
 		}
+	}
+}
+
+func TestParseActivationSettingsNormalizesLegacyAuthToSSO(t *testing.T) {
+	tests := []struct {
+		name     string
+		settings ConnectionSettings
+	}{
+		{
+			name:     "missing auth",
+			settings: ConnectionSettings{},
+		},
+		{
+			name: "legacy login",
+			settings: ConnectionSettings{
+				"vpn": {"data": dbus.MakeVariant(map[string]string{"auth": "login"})},
+			},
+		},
+		{
+			name: "legacy force login",
+			settings: ConnectionSettings{
+				"vpn": {"data": dbus.MakeVariant(map[string]string{"auth": "force-login"})},
+			},
+		},
+		{
+			name: "legacy reuse",
+			settings: ConnectionSettings{
+				"vpn": {"data": dbus.MakeVariant(map[string]string{"auth": "reuse"})},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			parsed := parseActivationSettings(tt.settings)
+			if parsed.AuthMode != "sso" {
+				t.Fatalf("AuthMode = %q, want sso", parsed.AuthMode)
+			}
+		})
 	}
 }
 
