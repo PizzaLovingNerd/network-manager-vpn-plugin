@@ -1,4 +1,4 @@
-policy_module(nm_netbird, 1.0.1)
+policy_module(nm_netbird, 1.0.2)
 
 require {
 	type NetworkManager_t;
